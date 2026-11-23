@@ -1,0 +1,60 @@
+rules_version = '2';
+
+// SAT R&W Tutor (firebase-public/SPEC.md §8). Phase 2: logic runs in the client,
+// so rules enforce ownership and document shape, not scoring truth.
+// The previously deployed rules were deny-all; everything outside users/{uid} stays denied.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Signed in with a verified email (Google accounts are always verified).
+    function owner(uid) {
+      return request.auth != null
+        && request.auth.uid == uid
+        && (request.auth.token.email_verified == true
+            || request.auth.token.firebase.sign_in_provider == 'google.com');
+    }
+
+    function validProfile() {
+      let d = request.resource.data;
+      return d.displayName is string
+        && d.displayName.size() >= 1 && d.displayName.size() <= 60
+        && d.masteryThreshold is int
+        && d.masteryThreshold >= 50 && d.masteryThreshold <= 100;
+    }
+
+    function validExam() {
+      let d = request.resource.data;
+      return d.status in ['created', 'in_progress', 'completed']
+        && d.mode in ['random', 'easy_only', 'generated']
+        && d.questionIds is list && d.questionIds.size() == 27
+        && d.durationSeconds == 1920;
+    }
+
+    function validResponse() {
+      let d = request.resource.data;
+      return d.get('selectedChoice', null) in [null, 'A', 'B', 'C', 'D']
+        && d.get('flagged', false) is bool
+        && d.get('skipped', false) is bool
+        && d.get('isCorrect', false) is bool;
+    }
+
+    match /users/{uid} {
+      allow read, delete: if owner(uid);
+      allow create, update: if owner(uid) && validProfile();
+
+      match /stats/{doc} {
+        allow read, write: if owner(uid);
+      }
+
+      match /exams/{examId} {
+        allow read, delete: if owner(uid);
+        allow create, update: if owner(uid) && validExam();
+
+        match /responses/{questionId} {
+          allow read, delete: if owner(uid);
+          allow create, update: if owner(uid) && validResponse();
+        }
+      }
+    }
+  }
+}
